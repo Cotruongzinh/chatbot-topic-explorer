@@ -1,0 +1,8 @@
+# Theme demo cho Chatbot Topic Explorer
+[theme]
+base = "dark"
+primaryColor = "#20634F"
+backgroundColor = "#0D131A"
+secondaryBackgroundColor = "#1D2733"
+textColor = "#F3F6FA"
+font = "sans serif"
