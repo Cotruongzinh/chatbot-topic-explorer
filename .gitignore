@@ -1,27 +1,28 @@
+# Python
 .venv/
-__pycache__/
-*.pyc
-outputs/
-.streamlit/secrets.toml
-
-# Python cache
-*.py[cod]
-# Virtual environments and local secrets
 venv/
 env/
-.env
-.env.*
-# Generated reports, backups and logs
-/backups/
-/reports/
-*.backup_*
-*.backup
-*.bak
-*.log
-# Tool caches
+__pycache__/
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Environment and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Local artifacts
+/models/
+/backups/
 /outputs/
+/reports/
+*.log
 *.backup*
+*.bak
 *.zip
+
+# OS files
+.DS_Store
+Thumbs.db

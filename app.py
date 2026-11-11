@@ -19,6 +19,13 @@ from src.bertopic_engine import (
 
 from src.topic_labeler import generate_topic_labels
 
+from src.model_storage import (
+    get_saved_model_metadata,
+    is_saved_model_compatible,
+    load_topic_model,
+    save_topic_model,
+)
+
 
 st.set_page_config(
     page_title="Chatbot Topic Explorer",
@@ -222,6 +229,13 @@ st.divider()
 
 st.subheader("05. Phân tích chủ đề bằng BERTopic")
 
+storage_notice = st.session_state.pop("model_storage_notice", None)
+if storage_notice:
+    if str(storage_notice).startswith("WARNING:"):
+        st.warning(str(storage_notice).replace("WARNING:", "", 1).strip())
+    else:
+        st.success(storage_notice)
+
 if len(documents) < 20:
 
     st.warning(
@@ -230,14 +244,131 @@ if len(documents) < 20:
 
 else:
 
-    run_button = st.button(
-        "Bắt đầu phân tích chủ đề",
-        type="primary",
-        width="stretch"
+    saved_model_metadata = get_saved_model_metadata()
+    saved_model_available = is_saved_model_compatible(
+        analysis_signature,
+        len(documents),
     )
 
-    if run_button:
+    if saved_model_available and saved_model_metadata:
+        st.caption(
+            "Đã có mô hình phù hợp với dữ liệu hiện tại. "
+            "Khi bấm nút bên dưới, ứng dụng sẽ tải lại mô hình đã lưu "
+            "thay vì chạy fitting từ đầu. "
+            f"Lần lưu gần nhất: {saved_model_metadata.get('created_at', 'không rõ')}."
+        )
+    elif saved_model_metadata:
+        st.caption(
+            "Có model đã lưu nhưng không phù hợp với dữ liệu hiện tại. "
+            "Ứng dụng sẽ phân tích và tạo model mới khi bạn bấm nút."
+        )
+    else:
+        st.caption(
+            "Chưa có model phù hợp. Ứng dụng sẽ chạy BERTopic và tự động lưu "
+            "model sau khi phân tích hoàn tất."
+        )
 
+    # Một nút duy nhất: tải model nếu tương thích, nếu không thì fit model mới.
+    analyze_button = st.button(
+        "Phân tích chủ đề",
+        type="primary",
+        width="stretch",
+        key="analyze_bertopic",
+    )
+
+    if analyze_button:
+
+        # Nếu đã có model tương thích, ưu tiên khôi phục model đã lưu.
+        # Nếu model không tải được, ứng dụng sẽ chuyển sang fitting mới.
+        if saved_model_available:
+            try:
+                with st.spinner("Đang tải embedding model và khôi phục BERTopic..."):
+                    embedding_model = load_embedding_model()
+                    topic_model, saved_metadata = load_topic_model(
+                        embedding_model,
+                        expected_analysis_signature=analysis_signature,
+                        expected_document_count=len(documents),
+                    )
+
+                loaded_topics = list(topic_model.topics_)
+                if len(loaded_topics) != len(documents):
+                    raise ValueError(
+                        "Số topic trong model không khớp số văn bản của file CSV."
+                    )
+
+                topic_info = topic_model.get_topic_info()
+                result_dataframe = valid_dataframe.copy()
+                result_dataframe["topic_id"] = loaded_topics
+
+                auto_labels = {
+                    int(key): str(value)
+                    for key, value in saved_metadata.get("topic_auto_labels", {}).items()
+                }
+                if not auto_labels:
+                    auto_labels = generate_topic_labels(
+                        topic_info,
+                        result_dataframe,
+                        text_column=text_column,
+                    )
+
+                representation_map = dict(
+                    zip(topic_info["Topic"], topic_info["Representation"])
+                )
+                result_dataframe["topic_name"] = (
+                    result_dataframe["topic_id"].map(auto_labels)
+                )
+                result_dataframe["topic_keywords"] = (
+                    result_dataframe["topic_id"].map(
+                        lambda topic_id: ", ".join(
+                            str(word).replace("_", " ")
+                            for word in representation_map.get(topic_id, [])
+                        )
+                        if isinstance(representation_map.get(topic_id, []), (list, tuple))
+                        else str(representation_map.get(topic_id, ""))
+                    )
+                )
+
+                user_labels = {
+                    int(key): str(value)
+                    for key, value in saved_metadata.get("topic_user_labels", {}).items()
+                }
+
+                st.session_state["topic_model"] = topic_model
+                st.session_state["topic_info"] = topic_info
+                st.session_state["result_dataframe"] = result_dataframe
+                st.session_state["topic_auto_labels"] = auto_labels
+                st.session_state["topic_user_labels"] = user_labels
+                st.session_state["vn_keywords_refined"] = bool(
+                    saved_metadata.get("vn_keywords_refined", False)
+                )
+                st.session_state.pop("all_topics_zip_bytes", None)
+
+                previous_info = saved_metadata.get("topic_info_before_refinement")
+                if previous_info:
+                    st.session_state["topic_info_before_refinement"] = pd.DataFrame(
+                        previous_info
+                    )
+                else:
+                    st.session_state.pop("topic_info_before_refinement", None)
+
+                for state_key in list(st.session_state):
+                    if str(state_key).startswith("topic_user_label_"):
+                        st.session_state.pop(state_key, None)
+
+                st.session_state["analysis_signature"] = analysis_signature
+                st.session_state["model_storage_notice"] = (
+                    "Đã tải lại mô hình BERTopic đã lưu. "
+                    "Không cần chạy fitting lại trên bộ dữ liệu này."
+                )
+                st.rerun()
+
+            except Exception as load_error:
+                st.warning(
+                    "Không thể tải model đã lưu, ứng dụng sẽ chạy phân tích mới. "
+                    f"Chi tiết: {load_error}"
+                )
+
+        # Xóa kết quả cũ trước khi chạy fitting mới.
         st.session_state.pop("topic_user_labels", None)
         st.session_state.pop("topic_auto_labels", None)
         st.session_state.pop("all_topics_zip_bytes", None)
@@ -255,7 +386,6 @@ else:
             ):
                 embedding_model = load_embedding_model()
 
-
             # Generate embeddings
             with st.spinner(
                 "Đang xử lý nội dung hội thoại..."
@@ -266,7 +396,6 @@ else:
                     show_progress_bar=False,
                     convert_to_numpy=True
                 )
-
 
             # Run BERTopic
             with st.spinner(
@@ -283,10 +412,8 @@ else:
                     embedding_model
                 )
 
-
             # Attach topic results to original metadata
             result_dataframe = valid_dataframe.copy()
-
             result_dataframe["topic_id"] = topics
 
             representation_map = dict(
@@ -302,14 +429,13 @@ else:
                 text_column=text_column
             )
 
-            result_dataframe["topic_name"] = (
-                result_dataframe["topic_id"].map(auto_labels)
-            )
-
             # Đồng bộ nhãn gợi ý vào BERTopic nếu phiên bản hỗ trợ.
             if hasattr(topic_model, "set_topic_labels"):
                 topic_model.set_topic_labels(auto_labels)
 
+            result_dataframe["topic_name"] = (
+                result_dataframe["topic_id"].map(auto_labels)
+            )
             result_dataframe["topic_keywords"] = (
                 result_dataframe["topic_id"].map(
                     lambda topic_id: ", ".join(
@@ -318,22 +444,38 @@ else:
                 )
             )
 
-
             # Save results in session
             st.session_state["topic_model"] = topic_model
             st.session_state["topic_auto_labels"] = auto_labels
             st.session_state["topic_info"] = topic_info
             st.session_state["result_dataframe"] = result_dataframe
-            st.success(
-                "Phân tích chủ đề đã hoàn tất."
-            )
+
+            try:
+                save_topic_model(
+                    topic_model=topic_model,
+                    analysis_signature=analysis_signature,
+                    text_column=text_column,
+                    source_filename=uploaded_file.name,
+                    document_count=len(documents),
+                    topic_auto_labels=auto_labels,
+                    topic_user_labels=st.session_state.get("topic_user_labels", {}),
+                    vn_keywords_refined=False,
+                    topic_info_before_refinement=None,
+                )
+                st.success(
+                    "Phân tích chủ đề đã hoàn tất và mô hình đã được lưu vào models/."
+                )
+            except Exception as save_error:
+                st.success("Phân tích chủ đề đã hoàn tất.")
+                st.warning(
+                    "Phân tích thành công nhưng chưa lưu được model: "
+                    f"{save_error}"
+                )
 
         except Exception as error:
-
             st.error(
                 f"Không thể hoàn thành phân tích: {error}"
             )
-
             st.exception(error)
 
 
@@ -384,6 +526,28 @@ if (
                     st.session_state["result_dataframe"] = updated_df
                     st.session_state["vn_keywords_refined"] = True
                     st.session_state.pop("all_topics_zip_bytes", None)
+
+                    try:
+                        save_topic_model(
+                            topic_model=fitted_model,
+                            analysis_signature=analysis_signature,
+                            text_column=text_column,
+                            source_filename=uploaded_file.name,
+                            document_count=len(documents),
+                            topic_auto_labels=auto_labels,
+                            topic_user_labels=st.session_state.get("topic_user_labels", {}),
+                            vn_keywords_refined=True,
+                            topic_info_before_refinement=old_topic_info,
+                        )
+                        st.session_state["model_storage_notice"] = (
+                            "Đã lưu mô hình sau khi cải thiện từ khóa tiếng Việt."
+                        )
+                    except Exception as save_error:
+                        st.session_state["model_storage_notice"] = (
+                            "WARNING: Đã cải thiện từ khóa nhưng chưa lưu được model: "
+                            f"{save_error}"
+                        )
+
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Chưa thể cải thiện từ khóa: {exc}")
@@ -657,5 +821,35 @@ if (
         st.session_state["result_dataframe"],
     )
 # STEP4_TOPIC_EXPLORER_END
+
+# Luu lai model va cac nhan hien tai sau khi nguoi dung chinh sua.
+if (
+    st.session_state.get("analysis_signature") == analysis_signature
+    and "topic_model" in st.session_state
+    and "topic_info" in st.session_state
+    and "result_dataframe" in st.session_state
+):
+    if st.button(
+        "Lưu mô hình hiện tại",
+        key="save_current_bertopic_model",
+        width="stretch",
+    ):
+        try:
+            save_topic_model(
+                topic_model=st.session_state["topic_model"],
+                analysis_signature=analysis_signature,
+                text_column=text_column,
+                source_filename=uploaded_file.name,
+                document_count=len(documents),
+                topic_auto_labels=st.session_state.get("topic_auto_labels", {}),
+                topic_user_labels=st.session_state.get("topic_user_labels", {}),
+                vn_keywords_refined=st.session_state.get("vn_keywords_refined", False),
+                topic_info_before_refinement=st.session_state.get(
+                    "topic_info_before_refinement"
+                ),
+            )
+            st.success("Đã lưu mô hình và trạng thái topic hiện tại vào models/.")
+        except Exception as save_error:
+            st.error(f"Không thể lưu mô hình: {save_error}")
 
 # STEP6_TOPIC_EXPLORER_INSTALLED
